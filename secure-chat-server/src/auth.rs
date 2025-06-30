@@ -6,7 +6,7 @@ const SECRET_KEY: &[u8] = b"secret";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    subject: String,
+    pub subject: String,
     expiration: usize,
 }
 

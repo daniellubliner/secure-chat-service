@@ -3,13 +3,18 @@ use axum::{
     http::StatusCode,
     Json, Router,
     extract::State,
+    response::IntoResponse,
 };
+use axum_extra::TypedHeader;
+use axum_extra::headers::{authorization::Bearer, Authorization};
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use std::{collections::HashMap, sync::{Arc, Mutex}};
-use argon2::{PasswordVerifier, PasswordHasher, Argon2};
+use argon2::{PasswordVerifier, PasswordHash, PasswordHasher, Argon2};
 use rand::rngs::OsRng;
 use password_hash::SaltString;
+mod auth;
+use crate::auth::{verify_jwt, create_jwt};
 
 #[tokio::main]
 async fn main() {
@@ -21,7 +26,6 @@ async fn main() {
         // Authentication
         .route("/register", post(register_user))
         .route("/login", post(login_user))
-        .route("/logout", post(logout_user))
 
         // User management
         .route("/me", get(get_my_profile))
@@ -57,6 +61,17 @@ struct LoginPayload {
     password: String,
 }
 
+#[derive(Deserialize)]
+struct MyProfile {
+    username: String,
+    password: String,
+}
+
+#[derive(Serialize)]
+struct LoginResponse {
+    token: String,
+}
+
 type Users = Arc<Mutex<HashMap<String, String>>>;
 
 #[axum::debug_handler]
@@ -85,32 +100,40 @@ async fn register_user(
 async fn login_user(
     State(users): State<Users>,
     Json(payload): Json<LoginPayload>
-) -> StatusCode {
+) -> Result<Json<LoginResponse>, StatusCode> {
 
     let users = users.lock().unwrap();
 
-    if !users.contains_key(&payload.username) {
-        return StatusCode::UNAUTHORIZED;
+    let hashed_pw = users.get(&payload.username)
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+
+    let argon2 = Argon2::default();
+    let parsed_hash = PasswordHash::new(hashed_pw).unwrap();
+    if argon2.verify_password(payload.password.as_bytes(), &parsed_hash).is_ok() {
+        let token = create_jwt(&payload.username);
+        Ok(Json(LoginResponse { token }))
     } else {
-        if let Some(hashed_password) = users.get(&payload.username) {
-            let hashed_pw = argon2::PasswordHash::new(hashed_password).unwrap();
-            let verify_result = argon2::Argon2::default().verify_password(payload.password.as_bytes(), &hashed_pw);
-            if verify_result.is_ok() {
-                return StatusCode::OK;
-            }
-        }
+        Err(StatusCode::UNAUTHORIZED)
     }
-    StatusCode::UNAUTHORIZED
 }
 
-async fn logout_user() -> StatusCode {
-    // TODO: Implement logout
-    StatusCode::NOT_IMPLEMENTED
-}
-
-async fn get_my_profile() -> StatusCode {
+async fn get_my_profile(
+    TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
+    State(users): State<Users>,
+) -> impl IntoResponse {
     // TODO: Return authenticated user profile
-    StatusCode::NOT_IMPLEMENTED
+    let token = bearer.token();
+    let claims = match verify_jwt(token) {
+        Ok(claims) => claims,
+        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+    };
+
+    let users = users.lock().unwrap();
+    if let Some(profile) = users.get(&claims.subject) {
+        return Json(profile.clone()).into_response();
+    };
+
+    StatusCode::NOT_FOUND.into_response()
 }
 
 async fn list_users() -> StatusCode {
