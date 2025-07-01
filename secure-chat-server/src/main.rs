@@ -67,12 +67,20 @@ struct MyProfile {
     password: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct User {
+    username: String,
+
+    #[serde(skip_serializing)]
+    password_hash: String,
+}
+
 #[derive(Serialize)]
 struct LoginResponse {
     token: String,
 }
 
-type Users = Arc<Mutex<HashMap<String, String>>>;
+type Users = Arc<Mutex<HashMap<String, User>>>;
 
 #[axum::debug_handler]
 async fn register_user(
@@ -91,7 +99,13 @@ async fn register_user(
         .unwrap()
         .to_string();
 
-    users.insert(payload.username.clone(), hash);
+    users.insert(
+        payload.username.clone(), 
+        User {
+            username: payload.username.clone(),
+            password_hash: hash,
+        },
+    );
     println!("Registered user: {}", payload.username);
     StatusCode::CREATED
 }
@@ -104,11 +118,11 @@ async fn login_user(
 
     let users = users.lock().unwrap();
 
-    let hashed_pw = users.get(&payload.username)
+    let user = users.get(&payload.username)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let argon2 = Argon2::default();
-    let parsed_hash = PasswordHash::new(hashed_pw).unwrap();
+    let parsed_hash = PasswordHash::new(&user.password_hash).unwrap();
     if argon2.verify_password(payload.password.as_bytes(), &parsed_hash).is_ok() {
         let token = create_jwt(&payload.username);
         Ok(Json(LoginResponse { token }))
@@ -121,7 +135,7 @@ async fn get_my_profile(
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
     State(users): State<Users>,
 ) -> impl IntoResponse {
-    // TODO: Return authenticated user profile
+    
     let token = bearer.token();
     let claims = match verify_jwt(token) {
         Ok(claims) => claims,
@@ -129,8 +143,8 @@ async fn get_my_profile(
     };
 
     let users = users.lock().unwrap();
-    if let Some(profile) = users.get(&claims.subject) {
-        return Json(profile.clone()).into_response();
+    if let Some(user) = users.get(&claims.sub) {
+        return Json(user.clone()).into_response();
     };
 
     StatusCode::NOT_FOUND.into_response()

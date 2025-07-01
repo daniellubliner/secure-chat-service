@@ -6,8 +6,8 @@ const SECRET_KEY: &[u8] = b"secret";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub subject: String,
-    expiration: usize,
+    pub sub: String,
+    exp: usize,
 }
 
 pub fn create_jwt(username: &str) -> String {
@@ -19,8 +19,8 @@ pub fn create_jwt(username: &str) -> String {
         .as_secs() as usize;
 
     let claims = Claims {
-        subject: username.to_string(),
-        expiration: expiration,
+        sub: username.to_string(),
+        exp: expiration,
     };
 
     encode(&Header::default(), &claims, &EncodingKey::from_secret(SECRET_KEY)).unwrap()
