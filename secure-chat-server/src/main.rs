@@ -13,12 +13,18 @@ use std::{collections::HashMap, sync::{Arc, Mutex}};
 use argon2::{PasswordVerifier, PasswordHash, PasswordHasher, Argon2};
 use rand::rngs::OsRng;
 use password_hash::SaltString;
+use std::env;
+use dotenv::dotenv;
 mod auth;
+use uuid::Uuid;
 use crate::auth::{verify_jwt, create_jwt};
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    
+    dotenv().ok();
+    let _secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set.");
 
     let users: Users = Arc::new(Mutex::new(HashMap::new()));
 
@@ -61,23 +67,24 @@ struct LoginPayload {
     password: String,
 }
 
-#[derive(Deserialize)]
-struct MyProfile {
-    username: String,
-    password: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct User {
     username: String,
 
     #[serde(skip_serializing)]
     password_hash: String,
+
+    id: Uuid,
 }
 
 #[derive(Serialize)]
 struct LoginResponse {
     token: String,
+}
+
+#[derive(Serialize)]
+struct UsersList {
+    users: Vec<User>,
 }
 
 type Users = Arc<Mutex<HashMap<String, User>>>;
@@ -99,14 +106,17 @@ async fn register_user(
         .unwrap()
         .to_string();
 
+    let user_id: Uuid = Uuid::new_v4();
+
     users.insert(
         payload.username.clone(), 
         User {
             username: payload.username.clone(),
+            id: user_id,
             password_hash: hash,
         },
     );
-    println!("Registered user: {}", payload.username);
+
     StatusCode::CREATED
 }
 
@@ -117,7 +127,6 @@ async fn login_user(
 ) -> Result<Json<LoginResponse>, StatusCode> {
 
     let users = users.lock().unwrap();
-
     let user = users.get(&payload.username)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
@@ -150,9 +159,23 @@ async fn get_my_profile(
     StatusCode::NOT_FOUND.into_response()
 }
 
-async fn list_users() -> StatusCode {
-    // TODO: List users
-    StatusCode::NOT_IMPLEMENTED
+async fn list_users(
+    State(users): State<Users>,
+    TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
+) -> Result<Json<UsersList>, StatusCode> {
+    
+    let token = bearer.token();
+    let _claims = match verify_jwt(&token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED)
+    };
+
+    let users = users.lock().unwrap();
+    let user_list = UsersList {
+        users: users.values().cloned().collect(),
+    };
+
+    Ok(Json(user_list))
 }
 
 async fn get_user_profile() -> StatusCode {
