@@ -2,7 +2,7 @@ use axum::{
     routing::{get, post},
     http::StatusCode,
     Json, Router,
-    extract::State,
+    extract::{State, Path},
     response::IntoResponse,
 };
 use axum_extra::TypedHeader;
@@ -178,9 +178,24 @@ async fn list_users(
     Ok(Json(user_list))
 }
 
-async fn get_user_profile() -> StatusCode {
-    // TODO: Get a user's public profile
-    StatusCode::NOT_IMPLEMENTED
+async fn get_user_profile(
+    Path(id): Path<Uuid>,
+    State(users): State<Users>,
+    TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
+) -> Result<Json<User>, StatusCode> {
+    
+    let token = bearer.token();
+    let _claims = match verify_jwt(&token) {
+        Ok(claims) => claims,
+        Err(_) => return Err(StatusCode::UNAUTHORIZED)
+    };
+
+    let users = users.lock().unwrap();
+    if let Some(user) = users.values().find(|user| user.id == id) {
+        Ok(Json(user.clone()))
+    } else {
+        Err(StatusCode::NOT_FOUND)
+    }
 }
 
 async fn create_conversation() -> StatusCode {
