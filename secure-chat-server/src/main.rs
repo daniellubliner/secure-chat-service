@@ -1,55 +1,64 @@
+use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::{
-    routing::{get, post},
-    http::StatusCode,
     Json, Router,
-    extract::{State, Path},
+    extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
+    routing::{get, post},
 };
 use axum_extra::TypedHeader;
-use axum_extra::headers::{authorization::Bearer, Authorization};
-use serde::{Deserialize, Serialize};
-use tokio::net::TcpListener;
-use std::{collections::HashMap, sync::{Arc, Mutex}};
-use argon2::{PasswordVerifier, PasswordHash, PasswordHasher, Argon2};
-use rand::rngs::OsRng;
-use password_hash::SaltString;
-use std::env;
+use axum_extra::headers::{Authorization, authorization::Bearer};
 use dotenv::dotenv;
+use password_hash::SaltString;
+use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
+use std::env;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+use tokio::{
+    net::TcpListener,
+    sync::RwLock,
+};
 mod auth;
+use crate::auth::{create_jwt, verify_jwt};
 use uuid::Uuid;
-use crate::auth::{verify_jwt, create_jwt};
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
-    
+
     dotenv().ok();
     let _secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set.");
 
     let users: Users = Arc::new(Mutex::new(HashMap::new()));
+    let app_state = AppState {
+        conversations: Arc::new(RwLock::new(HashMap::new())),
+    };
 
     let app = Router::new()
         // Authentication
         .route("/register", post(register_user))
         .route("/login", post(login_user))
-
         // User management
         .route("/me", get(get_my_profile))
         .route("/users", get(list_users))
         .route("/users/{id}", get(get_user_profile))
-
         // Conversations
-        .route("/conversations", post(create_conversation).get(list_conversations))
+        .route(
+            "/conversations",
+            post(create_conversation).get(list_conversations),
+        )
         .route("/conversations/{id}", get(get_conversation))
         .route("/conversations/{id}/join", post(join_conversation))
-
         // Messages
         .route("/messages", post(send_message))
         .route("/messages/{conversation_id}", get(get_messages))
-
         // WebSocket for real-time chat
         .route("/ws", get(handle_websocket))
-        .with_state(users);
+        .with_state(users)
+        .with_state(app_state);
 
     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -87,6 +96,24 @@ struct UsersList {
     users: Vec<User>,
 }
 
+#[derive(Debug, Deserialize)]
+struct CreateConvoRequest {
+    participants: Vec<String>,
+    topic: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct Conversation {
+    id: String,
+    participants: Vec<String>,
+    topic: Option<String>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    conversations: Arc<RwLock<HashMap<String, Conversation>>>,
+}
+
 type Users = Arc<Mutex<HashMap<String, User>>>;
 
 #[axum::debug_handler]
@@ -102,14 +129,15 @@ async fn register_user(
 
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let hash = argon2.hash_password(payload.password.as_bytes(), &salt)
+    let hash = argon2
+        .hash_password(payload.password.as_bytes(), &salt)
         .unwrap()
         .to_string();
 
     let user_id: Uuid = Uuid::new_v4();
 
     users.insert(
-        payload.username.clone(), 
+        payload.username.clone(),
         User {
             username: payload.username.clone(),
             id: user_id,
@@ -123,16 +151,19 @@ async fn register_user(
 #[axum::debug_handler]
 async fn login_user(
     State(users): State<Users>,
-    Json(payload): Json<LoginPayload>
+    Json(payload): Json<LoginPayload>,
 ) -> Result<Json<LoginResponse>, StatusCode> {
-
     let users = users.lock().unwrap();
-    let user = users.get(&payload.username)
+    let user = users
+        .get(&payload.username)
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
     let argon2 = Argon2::default();
     let parsed_hash = PasswordHash::new(&user.password_hash).unwrap();
-    if argon2.verify_password(payload.password.as_bytes(), &parsed_hash).is_ok() {
+    if argon2
+        .verify_password(payload.password.as_bytes(), &parsed_hash)
+        .is_ok()
+    {
         let token = create_jwt(&payload.username);
         Ok(Json(LoginResponse { token }))
     } else {
@@ -144,7 +175,6 @@ async fn get_my_profile(
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
     State(users): State<Users>,
 ) -> impl IntoResponse {
-    
     let token = bearer.token();
     let claims = match verify_jwt(token) {
         Ok(claims) => claims,
@@ -163,11 +193,10 @@ async fn list_users(
     State(users): State<Users>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
 ) -> Result<Json<UsersList>, StatusCode> {
-    
     let token = bearer.token();
-    let _claims = match verify_jwt(&token) {
+    let _claims = match verify_jwt(token) {
         Ok(claims) => claims,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED)
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
     };
 
     let users = users.lock().unwrap();
@@ -183,11 +212,10 @@ async fn get_user_profile(
     State(users): State<Users>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
 ) -> Result<Json<User>, StatusCode> {
-    
     let token = bearer.token();
-    let _claims = match verify_jwt(&token) {
+    let _claims = match verify_jwt(token) {
         Ok(claims) => claims,
-        Err(_) => return Err(StatusCode::UNAUTHORIZED)
+        Err(_) => return Err(StatusCode::UNAUTHORIZED),
     };
 
     let users = users.lock().unwrap();
@@ -198,14 +226,27 @@ async fn get_user_profile(
     }
 }
 
-async fn create_conversation() -> StatusCode {
-    // TODO: Create new conversation
-    StatusCode::NOT_IMPLEMENTED
+async fn create_conversation(
+    State(state): State<AppState>,
+    Json(payload): Json<CreateConvoRequest>,
+) -> impl IntoResponse {
+    let id = Uuid::new_v4().to_string();
+    let convo = Conversation {
+        id: id.clone(),
+        participants: payload.participants,
+        topic: payload.topic,
+    };
+
+    state.conversations.write().await.insert(id.clone(), convo);
+    (StatusCode::CREATED, Json(id))
 }
 
-async fn list_conversations() -> StatusCode {
-    // TODO: List user's conversations
-    StatusCode::NOT_IMPLEMENTED
+async fn list_conversations(
+    State(state): State<AppState>,
+) -> StatusCode {
+    let conversations = state.conversations.read().await;
+    let list: Vec<_> = conversations.values().cloned().collect();
+    Json(list)
 }
 
 async fn get_conversation() -> StatusCode {
