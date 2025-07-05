@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 argon2 = "0.5.3"
-axum = { version = "0.8", features = ["macros"] }
+axum = { version = "0.8", features = ["macros", "ws"] }
 lock_api = "0.4.13"
 rand_core = "0.9.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -17,3 +17,4 @@ jsonwebtoken = "9.3.1"
 axum-extra = { version = "0.10.1", features = ["typed-header"] }
 dotenv = "0.15.0"
 uuid = { version = "1.17.0", features = ["serde", "v4"] }
+futures-util = "0.3.31"

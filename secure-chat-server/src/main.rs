@@ -1,7 +1,7 @@
 use argon2::{Argon2, PasswordHash, PasswordHasher, PasswordVerifier};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, State, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -19,11 +19,12 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::RwLock,
+    sync::{RwLock, mpsc},
 };
 mod auth;
 use crate::auth::{create_jwt, verify_jwt};
 use uuid::Uuid;
+use futures_util::{StreamExt, SinkExt};
 
 #[tokio::main]
 async fn main() {
@@ -32,8 +33,8 @@ async fn main() {
     dotenv().ok();
     let _secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set.");
 
-    //let users: Users = Arc::new(Mutex::new(HashMap::new()));
     let app_state = AppState {
+        rooms: Arc::new(RwLock::new(HashMap::new())),
         conversations: Arc::new(RwLock::new(HashMap::new())),
         users: Arc::new(Mutex::new(HashMap::new())),
     };
@@ -52,17 +53,17 @@ async fn main() {
             post(create_conversation).get(list_conversations),
         )
         .route("/conversations/{id}", get(get_conversation))
-        .route("/conversations/{id}/join", post(join_conversation))
+        .route("/ws/conversations/{id}", get(ws_join_conversation))
         // Messages
         .route("/messages", post(send_message))
         .route("/messages/{conversation_id}", get(get_messages))
-        // WebSocket for real-time chat
-        .route("/ws", get(handle_websocket))
         .with_state(app_state);
 
     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
+
+type Tx = mpsc::UnboundedSender<Message>;
 
 #[derive(Deserialize)]
 struct RegisterPayload {
@@ -111,6 +112,7 @@ struct Conversation {
 
 #[derive(Clone)]
 struct AppState {
+    pub rooms: Arc<RwLock<HashMap<String, Vec<Tx>>>>,
     conversations: Arc<RwLock<HashMap<String, Conversation>>>,
     users: Arc<Mutex<HashMap<String, User>>>,
 }
@@ -248,14 +250,24 @@ async fn list_conversations(
     Json(list)
 }
 
-async fn get_conversation() -> StatusCode {
-    // TODO: Get conversation details
-    StatusCode::NOT_IMPLEMENTED
+async fn get_conversation(
+    Path(id): Path<Uuid>,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let conversations = state.conversations.read().await;
+    if let Some(convo) = conversations.get(&id.to_string()) {
+        Json(convo.clone()).into_response()
+    } else {
+        StatusCode::NOT_FOUND.into_response()
+    }
 }
 
-async fn join_conversation() -> StatusCode {
-    // TODO: Join conversation
-    StatusCode::NOT_IMPLEMENTED
+async fn ws_join_conversation(
+    Path(convo_id): Path<String>,
+    State(state): State<AppState>,
+    ws: WebSocketUpgrade, 
+) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_websocket(socket, convo_id, state))
 }
 
 async fn send_message() -> StatusCode {
@@ -268,7 +280,55 @@ async fn get_messages() -> StatusCode {
     StatusCode::NOT_IMPLEMENTED
 }
 
-async fn handle_websocket() -> StatusCode {
-    // TODO: Handle websocket connection
-    StatusCode::NOT_IMPLEMENTED
+async fn handle_websocket(
+    socket: WebSocket,
+    convo_id: String,
+    state: AppState,
+) {
+
+    let (mut sender, mut receiver) = socket.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
+
+    {
+        let mut rooms = state.rooms.write().await;
+        rooms.entry(convo_id.clone())
+            .or_default()
+            .push(tx.clone());
+    }
+
+    // Spawn task to send messages to this WebSocket from broadcast channel
+    tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if sender.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Listen to messages from client and broadcast them
+    while let Some(Ok(msg)) = receiver.next().await {
+        if let Message::Text(text) = msg {
+            let broadcast = Message::Text(text.clone());
+
+            let rooms = state.rooms.read().await;
+            if let Some(participants) = rooms.get(&convo_id) {
+                for user in participants {
+                    let _ = user.send(broadcast.clone());
+                }
+            }
+        }
+    }
+
+    // Remove sender from room on disconnect
+    {
+        let mut rooms = state.rooms.write().await;
+        if let Some(participants) = rooms.get_mut(&convo_id) {
+            participants.retain(|s| !s.is_closed());
+
+            // Clean up empty rooms
+            if participants.is_empty() {
+                rooms.remove(&convo_id);
+            }
+        }
+    }
 }
