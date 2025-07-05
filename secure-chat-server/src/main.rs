@@ -32,9 +32,10 @@ async fn main() {
     dotenv().ok();
     let _secret_key = env::var("SECRET_KEY").expect("SECRET_KEY must be set.");
 
-    let users: Users = Arc::new(Mutex::new(HashMap::new()));
+    //let users: Users = Arc::new(Mutex::new(HashMap::new()));
     let app_state = AppState {
         conversations: Arc::new(RwLock::new(HashMap::new())),
+        users: Arc::new(Mutex::new(HashMap::new())),
     };
 
     let app = Router::new()
@@ -57,7 +58,6 @@ async fn main() {
         .route("/messages/{conversation_id}", get(get_messages))
         // WebSocket for real-time chat
         .route("/ws", get(handle_websocket))
-        .with_state(users)
         .with_state(app_state);
 
     let listener = TcpListener::bind("0.0.0.0:3000").await.unwrap();
@@ -112,16 +112,15 @@ struct Conversation {
 #[derive(Clone)]
 struct AppState {
     conversations: Arc<RwLock<HashMap<String, Conversation>>>,
+    users: Arc<Mutex<HashMap<String, User>>>,
 }
-
-type Users = Arc<Mutex<HashMap<String, User>>>;
 
 #[axum::debug_handler]
 async fn register_user(
-    State(users): State<Users>,
+    State(state): State<AppState>,
     Json(payload): Json<RegisterPayload>,
 ) -> StatusCode {
-    let mut users = users.lock().unwrap();
+    let mut users = state.users.lock().unwrap();
 
     if users.contains_key(&payload.username) {
         return StatusCode::CONFLICT;
@@ -150,10 +149,10 @@ async fn register_user(
 
 #[axum::debug_handler]
 async fn login_user(
-    State(users): State<Users>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginPayload>,
 ) -> Result<Json<LoginResponse>, StatusCode> {
-    let users = users.lock().unwrap();
+    let users = state.users.lock().unwrap();
     let user = users
         .get(&payload.username)
         .ok_or(StatusCode::UNAUTHORIZED)?;
@@ -173,7 +172,7 @@ async fn login_user(
 
 async fn get_my_profile(
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
-    State(users): State<Users>,
+    State(state): State<AppState>,
 ) -> impl IntoResponse {
     let token = bearer.token();
     let claims = match verify_jwt(token) {
@@ -181,7 +180,7 @@ async fn get_my_profile(
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let users = users.lock().unwrap();
+    let users = state.users.lock().unwrap();
     if let Some(user) = users.get(&claims.sub) {
         return Json(user.clone()).into_response();
     };
@@ -190,7 +189,7 @@ async fn get_my_profile(
 }
 
 async fn list_users(
-    State(users): State<Users>,
+    State(state): State<AppState>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
 ) -> Result<Json<UsersList>, StatusCode> {
     let token = bearer.token();
@@ -199,7 +198,7 @@ async fn list_users(
         Err(_) => return Err(StatusCode::UNAUTHORIZED),
     };
 
-    let users = users.lock().unwrap();
+    let users = state.users.lock().unwrap();
     let user_list = UsersList {
         users: users.values().cloned().collect(),
     };
@@ -209,7 +208,7 @@ async fn list_users(
 
 async fn get_user_profile(
     Path(id): Path<Uuid>,
-    State(users): State<Users>,
+    State(state): State<AppState>,
     TypedHeader(Authorization(bearer)): TypedHeader<Authorization<Bearer>>,
 ) -> Result<Json<User>, StatusCode> {
     let token = bearer.token();
@@ -218,7 +217,7 @@ async fn get_user_profile(
         Err(_) => return Err(StatusCode::UNAUTHORIZED),
     };
 
-    let users = users.lock().unwrap();
+    let users = state.users.lock().unwrap();
     if let Some(user) = users.values().find(|user| user.id == id) {
         Ok(Json(user.clone()))
     } else {
@@ -243,7 +242,7 @@ async fn create_conversation(
 
 async fn list_conversations(
     State(state): State<AppState>,
-) -> StatusCode {
+) -> impl IntoResponse {
     let conversations = state.conversations.read().await;
     let list: Vec<_> = conversations.values().cloned().collect();
     Json(list)
