@@ -15,4 +15,5 @@ ___
 **Directions for use**:
 1. Execute `cargo build` on the command-line.
 2. Execute `cargo run` to start the server. 
-3. Use a tool like [Insomnia](https://insomnia.rest) to create `POST` requests on the `register` and `login` routes to receive a JWT that you can use to access protected routes.
+3. Use a tool like [Insomnia](https://insomnia.rest) to create `POST` requests on the `register` and `login` routes to receive a JWT.
+4. User your JWT as a bearer token so you can access protected routes!
