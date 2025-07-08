@@ -7,6 +7,7 @@ For this project, I used Rust with the Axum web framework and Tokio asynchronous
 
 **What I'm working on now:**
 - Logging user interactions
+- Modifying my Axum server to use TLS
 - GitHub Actions CI/CD pipeline to automatically integrate and deploy changes in the codebase.
 - Refactoring my Axum handlers into a module to help clean up my `main.rs`!
 ___
