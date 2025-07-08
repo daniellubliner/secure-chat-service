@@ -1,11 +1,13 @@
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::User;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
     pub sub: String,
-    exp: usize,
+    pub exp: usize,
+    pub role: String,
 }
 
 pub fn get_secret_key() -> Vec<u8> {
@@ -14,7 +16,7 @@ pub fn get_secret_key() -> Vec<u8> {
         .into_bytes()
 }
 
-pub fn create_jwt(username: &str) -> String {
+pub fn create_jwt(user: &User) -> String {
     let expiration = SystemTime::now()
         .checked_add(Duration::from_secs(60 * 60))
         .unwrap()
@@ -23,8 +25,9 @@ pub fn create_jwt(username: &str) -> String {
         .as_secs() as usize;
 
     let claims = Claims {
-        sub: username.to_string(),
+        sub: user.username.to_string(),
         exp: expiration,
+        role: user.role.clone(),
     };
 
     encode(
